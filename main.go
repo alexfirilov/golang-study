@@ -39,9 +39,10 @@ var (
 		SwitchesMutex sync.Mutex
 		Documents = []Document{}
 		DocumentsMutex sync.Mutex
+		AIUpdates = make(chan string)
+		wg sync.WaitGroup
 	)
 
-var AIUpdates = make(chan string)
 
 func (s Server) GeneratePrompt() string {
 	var operationStatus string
@@ -60,6 +61,7 @@ func (s Switch) GeneratePrompt() string {
 }
 
 func ProcessPrompt(prompt string) {
+	defer wg.Done()
 	fmt.Printf("AI agent received prompt: [%s]\n", prompt)
 	time.Sleep(5 * time.Second)
 	AIUpdates <- "COMMAND_PARSE_SUCCESS: " + prompt
@@ -130,6 +132,7 @@ func handleDocuments (w http.ResponseWriter, r *http.Request) {
 		DocumentsMutex.Lock()
 		Documents = append(Documents, newDocument)
 		DocumentsMutex.Unlock()
+		wg.Add(1)
 		go ProcessPrompt(newDocument.Text)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(newDocument)
@@ -167,6 +170,7 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		fmt.Println("Server forced to shutdown:", err)
 	}
-
+	fmt.Println("Waiting for background A agents to finish...")
+	wg.Wait()
 	fmt.Println("Server exiting")
 }
