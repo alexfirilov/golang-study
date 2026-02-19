@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 type Server struct {
@@ -36,6 +41,8 @@ var (
 		DocumentsMutex sync.Mutex
 	)
 
+var AIUpdates = make(chan string)
+
 func (s Server) GeneratePrompt() string {
 	var operationStatus string
 	if s.Status {
@@ -50,6 +57,19 @@ func (s Server) GeneratePrompt() string {
 func (s Switch) GeneratePrompt() string {
 	result := fmt.Sprintf("Switch %s has %d ports.\nManaged: %t", s.Hostname, s.PortCount, s.IsManaged)
 	return result
+}
+
+func ProcessPrompt(prompt string) {
+	fmt.Printf("AI agent received prompt: [%s]\n", prompt)
+	time.Sleep(5 * time.Second)
+	AIUpdates <- "COMMAND_PARSE_SUCCESS: " + prompt
+}
+
+func InfrastructureWorker() {
+	for {
+		processedPrompt := <-AIUpdates 
+        fmt.Printf("Worker received AI instruction: [%s]\n", processedPrompt)
+	}
 }
 	
 func healthCheck (w http.ResponseWriter, r *http.Request) {
@@ -93,6 +113,8 @@ func handleDocuments (w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method == http.MethodGet {
+		DocumentsMutex.Lock()
+		defer DocumentsMutex.Unlock()
 		json.NewEncoder(w).Encode(Documents)
 		return
 	}
@@ -105,7 +127,10 @@ func handleDocuments (w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		DocumentsMutex.Lock()
 		Documents = append(Documents, newDocument)
+		DocumentsMutex.Unlock()
+		go ProcessPrompt(newDocument.Text)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(newDocument)
 		fmt.Println("New document added successfully")
@@ -119,8 +144,29 @@ func handleDocuments (w http.ResponseWriter, r *http.Request) {
 func main() {
 
 	fmt.Println("Starting Netscribe server...")
+	srv := &http.Server {
+		Addr: ":8080",
+		Handler: nil,
+	}
+	
 	http.HandleFunc("/health", healthCheck)
 	http.HandleFunc("/servers", handleServers)
 	http.HandleFunc("/documents", handleDocuments)
-	http.ListenAndServe(":8080", nil)
+	go InfrastructureWorker()
+
+	go func() { srv.ListenAndServe() }()
+	
+	fmt.Println("Server started successfully!")
+	
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	fmt.Println("\nShutdown signal received. Gracefully shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Println("Server forced to shutdown:", err)
+	}
+
+	fmt.Println("Server exiting")
 }
